@@ -34,7 +34,10 @@ type internal Evaluation =
    in progress. *)
 
 type internal Traversal =
-    | Traversal of Method * string * UriTemplateData
+    | Traversal of Method * Position * UriTemplateData
+
+ and internal Position =
+    | Position of string * int
 
 (* Request
 
@@ -100,8 +103,12 @@ module internal Evaluation =
        precedence. *)
 
     and private inclusion route =
-        function | Traversal (method, "", data) -> include method data route
+        function | Traversal (method, Complete _, data) -> include method data route
                  | _ -> []
+
+    and private (|Complete|_|) =
+        function | Position (content, caret) when caret >= content.Length -> Some (content, caret)
+                 | _ -> None
 
     and private include method data =
         function | Route (Endpoints method endpoints, _) -> List.map (fun (Endpoint (precedence, _, pipe)) -> precedence, data, pipe) endpoints
@@ -130,25 +137,31 @@ module internal Evaluation =
        simple set of filtering active patterns. *)
 
     and private progression route =
-        function | Traversal (method, pathAndQuery, data) -> progress method data pathAndQuery route
+        function | Traversal (method, position, data) -> progress method position data route
 
-    and private progress method data pathAndQuery =
-        function | Route (_, Remainders remainders) -> (List.map (remainder method data pathAndQuery) >> List.concat) remainders
+    and private progress method position data =
+        function | Route (_, Remainders remainders) -> (List.map (remainder method position data) >> List.concat) remainders
                  | _ -> []
 
     and private (|Remainders|_|) =
         function | [] -> None
                  | remainders -> Some remainders
 
-    and private remainder method data pathAndQuery =
-        function | Remainder (Match pathAndQuery (data', pathAndQuery), route) -> traverse route (Traversal (method, pathAndQuery, data + data'))
+    and private remainder method position data =
+        function | Remainder (Match position (data', position'), route) -> traverse route (Traversal (method, position', data + data'))
                  | _ -> []
 
-    and private (|Match|_|) pathAndQuery =
-        function | parser -> mapResult pathAndQuery (run parser pathAndQuery)
+    and private (|Match|_|) position =
+        function | parser -> runCaret parser position
 
-    and private mapResult pathAndQuery =
-        function | Success (data, _, position) -> Some (data, pathAndQuery.Substring (int position.Index))
+    and private runCaret parser =
+        function | Position (content, caret) -> result content caret (run parser content caret)
+
+    and private run parser content =
+        function | caret -> runParserOnSubstring parser () "" content caret (content.Length - caret)
+
+    and private result content caret =
+        function | Success (data, _, position) -> Some (data, Position (content, caret + (int position.Index)))
                  | _ -> None
 
     (* Selection
@@ -180,7 +193,7 @@ module internal Evaluation =
 
     and private initial =
             fun method pathAndQuery ->
-                Traversal (method, pathAndQuery, UriTemplateData Map.empty)
+                Traversal (method, Position (pathAndQuery, 0), UriTemplateData Map.empty)
         <!> Request.method
         <*> Request.pathAndQuery
 
